@@ -258,10 +258,13 @@ class HTTPConnectionPool(ConnectionPool, RequestMethods):
         if sock:
             sock.settimeout(timeout)
 
-        httplib_response = conn.getresponse()
+        try: # Python 2.7+, use buffering of HTTP responses
+            httplib_response = conn.getresponse(buffering=True)
+        except TypeError: # Python 2.6 and older
+            httplib_response = conn.getresponse()
 
         # AppEngine doesn't have a version attr.
-        http_version = getattr(conn, '_http_vsn_str', 'HTTP/?'),
+        http_version = getattr(conn, '_http_vsn_str', 'HTTP/?')
         log.debug("\"%s %s %s\" %s %s" % (method, url, http_version,
                                           httplib_response.status,
                                           httplib_response.length))
@@ -321,8 +324,8 @@ class HTTPConnectionPool(ConnectionPool, RequestMethods):
             Number of retries to allow before raising a MaxRetryError exception.
 
         :param redirect:
-            Automatically handle redirects (status codes 301, 302, 303, 307),
-            each redirect counts as a retry.
+            If True, automatically handle redirects (status codes 301, 302,
+            303, 307). Each redirect counts as a retry.
 
         :param assert_same_host:
             If ``True``, will make sure that the host of the pool requests is

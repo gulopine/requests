@@ -12,6 +12,7 @@ import json
 import os
 import unittest
 import pickle
+import tempfile
 
 import requests
 from requests.compat import str, StringIO
@@ -81,6 +82,16 @@ class RequestsTestSuite(TestSetup, TestBaseMixin, unittest.TestCase):
         request = requests.Request("http://0.0.0.0/get/test case")
 
         self.assertEqual(request.path_url, "/get/test%20case")
+
+    def test_params_are_added_before_fragment(self):
+        request = requests.Request(
+            "http://example.com/path#fragment", params={"a": "b"})
+        self.assertEqual(request.full_url,
+            "http://example.com/path?a=b#fragment")
+        request = requests.Request(
+            "http://example.com/path?key=value#fragment", params={"a": "b"})
+        self.assertEqual(request.full_url,
+            "http://example.com/path?key=value&a=b#fragment")
 
     def test_HTTP_200_OK_GET(self):
         r = get(httpbin('get'))
@@ -350,7 +361,14 @@ class RequestsTestSuite(TestSetup, TestBaseMixin, unittest.TestCase):
             post5 = post(url, files={'file': ('file.txt', 'more fdata')})
             self.assertEqual(post5.status_code, 200)
 
-            post6 = post(url, files={'fname.txt': '\xe9'})
+            # Dirty hack to tide us over until 3.3.
+            # TODO: Remove this hack when Python 3.3 is released.
+            if (sys.version_info[0] == 2):
+                fdata = '\xc3\xa9'.decode('utf-8')
+            else:
+                fdata = '\xe9'
+
+            post6 = post(url, files={'fname.txt': fdata})
             self.assertEqual(post6.status_code, 200)
 
             post7 = post(url, files={'fname.txt': 'fdata to verify'})
@@ -462,6 +480,30 @@ class RequestsTestSuite(TestSetup, TestBaseMixin, unittest.TestCase):
 
             assert rbody.get('form') in (None, {})
             self.assertEqual(rbody.get('data'), 'fooaowpeuf')
+
+    def test_file_post_data(self):
+
+        filecontent = b"fooaowpeufbarasjhf"
+        testfile = tempfile.NamedTemporaryFile(delete=False)
+        testfile.write(filecontent)
+        testfile.flush()
+        testfile.close()
+
+        for service in SERVICES:
+
+            data = open(testfile.name, "rb")
+            r = post(service('post'), data=data,
+                    headers={"content-type": "application/octet-stream"})
+
+            data.close()
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.headers['content-type'], 'application/json')
+            self.assertEqual(r.url, service('post'))
+
+            rbody = json.loads(r.text)
+            assert rbody.get('form') in (None, {})
+            self.assertEqual(rbody.get('data'), filecontent.decode('ascii'))
+        os.remove(testfile.name)
 
     def test_urlencoded_post_querystring(self):
 
@@ -912,6 +954,13 @@ class RequestsTestSuite(TestSetup, TestBaseMixin, unittest.TestCase):
         # and get the same back:
         r2 = requests.get(httpbin('get'), config=dict(keep_alive=False))
         self.assertEqual(r2.headers['Connection'].lower(), 'close')
+
+    def test_head_content(self):
+        """Test that empty bodies are properly supported."""
+
+        r = requests.head(httpbin('headers'))
+        r.content
+        r.text
 
 if __name__ == '__main__':
     unittest.main()

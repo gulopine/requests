@@ -7,7 +7,6 @@ requests.models
 This module contains the primary objects that power Requests.
 """
 
-import json
 import os
 from datetime import datetime
 
@@ -32,15 +31,7 @@ from .utils import (
     DEFAULT_CA_BUNDLE_PATH)
 from .compat import (
     cookielib, urlparse, urlunparse, urljoin, urlsplit, urlencode, str, bytes,
-    StringIO, is_py2)
-
-# Import chardet if it is available.
-try:
-    import chardet
-    # hush pyflakes
-    chardet
-except ImportError:
-    chardet = None
+    StringIO, is_py2, chardet, json)
 
 REDIRECT_STATI = (codes.moved, codes.found, codes.other, codes.temporary_moved)
 CONTENT_CHUNK_SIZE = 10 * 1024
@@ -59,7 +50,6 @@ class Request(object):
         params=dict(),
         auth=None,
         cookies=None,
-        store_cookies=True,
         timeout=None,
         redirect=False,
         allow_redirects=False,
@@ -91,7 +81,7 @@ class Request(object):
         #: HTTP Method to use.
         self.method = method
 
-        #: Dictionary or byte of request body data to attach to the
+        #: Dictionary, bytes or file stream of request body data to attach to the
         #: :class:`Request <Request>`.
         self.data = None
 
@@ -109,9 +99,6 @@ class Request(object):
 
         # Dictionary mapping protocol to the URL of the proxy (e.g. {'http': 'foo.bar:3128'})
         self.proxies = dict(proxies or [])
-
-        #param store_cookies: (optional) if ``False``, the received cookies as part of the HTTP response would be ignored.
-        self.store_cookies = store_cookies
 
         # If no proxies are given, allow configuration by environment variables
         # HTTP_PROXY and HTTPS_PROXY.
@@ -201,7 +188,7 @@ class Request(object):
                 response.encoding = get_encoding_from_headers(response.headers)
 
                 # Add new cookies from the server. Don't if configured not to
-                if self.store_cookies:
+                if self.config.get('store_cookies'):
                     extract_cookies_to_jar(self.cookies, self, resp)
 
                 # Save cookies in Response.
@@ -327,6 +314,8 @@ class Request(object):
             return data
         if isinstance(data, str):
             return data
+        elif hasattr(data, 'read'):
+            return data
         elif hasattr(data, '__iter__'):
             try:
                 dict(data)
@@ -406,14 +395,14 @@ class Request(object):
             if isinstance(fragment, str):
                 fragment = fragment.encode('utf-8')
 
-        url = (urlunparse([scheme, netloc, path, params, query, fragment]))
-
         enc_params = self._encode_params(self.params)
         if enc_params:
-            if urlparse(url).query:
-                url = '%s&%s' % (url, enc_params)
+            if query:
+                query = '%s&%s' % (query, enc_params)
             else:
-                url = '%s?%s' % (url, enc_params)
+                query = enc_params
+
+        url = (urlunparse([scheme, netloc, path, params, query, fragment]))
 
         if self.config.get('encode_uri', True):
             url = requote_uri(url)
@@ -511,7 +500,7 @@ class Request(object):
             if self.data:
 
                 body = self._encode_params(self.data)
-                if isinstance(self.data, str):
+                if isinstance(self.data, str) or hasattr(self.data, 'read'):
                     content_type = None
                 else:
                     content_type = 'application/x-www-form-urlencoded'
@@ -521,9 +510,10 @@ class Request(object):
             self.headers['Content-Type'] = content_type
 
         _p = urlparse(url)
+        no_proxy = filter(lambda x:x.strip(), self.proxies.get('no', '').split(','))
         proxy = self.proxies.get(_p.scheme)
 
-        if proxy:
+        if proxy and not any(map(_p.netloc.endswith, no_proxy)):
             conn = poolmanager.proxy_from_url(proxy)
             _proxy = urlparse(proxy)
             if '@' in _proxy.netloc:
@@ -570,7 +560,7 @@ class Request(object):
             conn.cert_reqs = 'CERT_NONE'
             conn.ca_certs = None
 
-        if self.cert and self.verify:
+        if self.cert:
             if len(self.cert) == 2:
                 conn.cert_file = self.cert[0]
                 conn.key_file = self.cert[1]
@@ -610,10 +600,10 @@ class Request(object):
                 raise ConnectionError(e)
 
             except (_SSLError, _HTTPError) as e:
-                if self.verify and isinstance(e, _SSLError):
+                if isinstance(e, _SSLError):
                     raise SSLError(e)
-
-                raise Timeout('Request timed out.')
+                else:
+                    raise Timeout('Request timed out.')
 
             # build_response can throw TooManyRedirects
             self._build_response(r)
@@ -665,7 +655,7 @@ class Response(object):
         #: Resulting :class:`HTTPError` of request, if one occurred.
         self.error = None
 
-        #: Encoding to decode with when accessing r.content.
+        #: Encoding to decode with when accessing r.text.
         self.encoding = None
 
         #: A list of :class:`Response <Response>` objects from
@@ -788,6 +778,9 @@ class Response(object):
         content = None
         encoding = self.encoding
 
+        if not self.content:
+            return str('')
+
         # Fallback to auto-detected encoding.
         if self.encoding is None:
             if chardet is not None:
@@ -812,6 +805,11 @@ class Response(object):
             return json.loads(self.text or self.content)
         except ValueError:
             return None
+
+    @property
+    def reason(self):
+        """The HTTP Reason for the response."""
+        return self.raw.reason
 
     def raise_for_status(self, allow_redirects=True):
         """Raises stored :class:`HTTPError` or :class:`URLError`, if one occurred."""
