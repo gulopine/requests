@@ -90,6 +90,10 @@ class OAuth1(AuthBase):
                 r.url, r.headers, r.data = self.client.sign(
                     unicode(r.full_url), unicode(r.method), r.data, r.headers)
 
+            # Both flows add params to the URL by using r.full_url,
+            # so this prevents adding it again later
+            r.params = {}
+
             # Having the authorization header, key or value, in unicode will
             # result in UnicodeDecodeErrors when the request is concatenated
             # by httplib. This can easily be seen when attaching files.
